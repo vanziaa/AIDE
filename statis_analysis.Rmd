@@ -1,0 +1,1042 @@
+---
+title: "statistical analysis"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+options(warn = -1)
+library(Hmisc);library(glmnet);library(survivalROC);library(stats);library(hdnom);library(boot);library(e1071);library(reshape2);library(caret)
+library(rms);library(survival);library(survcomp);library(survminer);library(compareC);library(sva);library(MASS);library(ggplot2);library(TSHRC);library(ggpubr);library(survIDINRI);library(survivalROC);source('HLtest.r');source('dca.r');source('val.prob.ci.dec08.r');source('stdca.R');library(ggsci);library(ggplot2);library(gridExtra);library(timeROC);library(corrplot);library(rmda);library(ggDCA);library('ggprism');library(cutpointr);library(ggthemes)
+```
+
+```{r}
+R.version
+```
+
+Read the training, validation, and test dataset
+
+```{r}
+
+train_data <- read.csv("./train.csv")
+test_data <- read.csv("./test.csv")
+data_all <- rbind(train_data,test_data)
+```
+
+```{r}
+#Analysis
+analysis_data<-data.frame (ID=data_all$ID,
+                           time=data_all$Time,
+                           event=data_all$Event,
+                           prd=data_all$Prediction,
+                           group=data_all$group,
+                           CP=data_all$CP,
+                           MELD=data_all$MELD,
+                           ALBI=data_all$ALBI,
+                           FIB=data_all$FIB,
+                           AF=data_all$ALBIFIB,
+                           BAVENO=data_all$BAVENOVII,
+                           CSPH=data_all$CSPH,
+                           LSM=data_all$LSM)
+```
+
+Split the data into three group
+
+```{r}
+tr<- analysis_data[which(analysis_data$group == "Training"),]
+val<- analysis_data[which(analysis_data$group == "Validation"),]
+ts<- analysis_data[which(analysis_data$group == "Test"),]
+```
+
+```{r}
+all<-rbind(tr,val,ts)
+write.csv(all,"ALLDATA106_all.csv")
+write.csv(data_all,"ALLDATA106_alldata.csv")
+#write.csv(tr,"ALLDATA1126_tr.csv")
+#write.csv(val,"ALLDATA1126_val.csv")
+#write.csv(ts,"ALLDATA1126_ts.csv")
+#write.csv(rbind(tr,val),"ALLDATA1126_c1to5.csv")
+```
+
+C-index & C-index comparison
+
+```{r}
+cindex_cal<- function(inputdf){
+   df_cox=inputdf
+   surv <- Surv(time=df_cox$time,event=df_cox$event)
+   pre <- df_cox$prd
+   cdex <- rcorr.cens(pre,surv)
+   #cdex<-survConcordance(surv~pre)$concordance
+   c <- 1-cdex[1]
+   upper <- cdex[3]/2*1.96+c
+   lower <- c-cdex[3]/2*1.96
+   CDEX<-rbind(lower,c,upper,cdex[3])
+   print("_______")
+   print(CDEX)}
+   
+```
+
+```{r}
+c_tr_dl <- cindex_cal(tr)  # C-index training
+c_val_dl <- cindex_cal(val) # C-index valdation
+c_ts_dl <- cindex_cal(ts) # C-index test
+cindex_cal(rbind(val,ts))
+cindex_cal(rbind(val,tr))
+```
+
+```{r}
+ccom <- function(df,filename){
+    ccomapre2<-data.frame(no=1,c_sn=2,sn_lower=3,
+                          sn_upper=4,c_com=5,c_lower=6,
+                          c_upper=7,P=8,row=9)
+    mydata<-df
+    mydata3<-data.frame(time=mydata$time,
+                        status=mydata$event,
+                        pred=mydata$prd,
+                        MELD=mydata$MELD,
+                        ALBI=mydata$ALBI,
+                        FIB=mydata$FIB,
+                        ALBIFIB=as.numeric(mydata$AF),
+                        BAVENO=mydata$BAVENO,
+                        LSM=mydata$LSM)
+    i=4
+    while (i<10){
+        print(i)
+        mydata2<-mydata3[!is.na(mydata3[,i]),]
+        mydata2<-mydata2[!is.na(mydata2$pred),]
+        C_index1 <- concordance.index(x=mydata2$pred, 
+                                      surv.time=mydata2$time,
+                                      surv.event=mydata2$status,
+                                      method="noether")
+        C_index2 <- concordance.index(x=mydata2[,i], 
+                                      surv.time=mydata2$time,
+                                      surv.event=mydata2$status,
+                                      method="noether")
+        ccomr<-cindex.comp(C_index1, C_index2)
+        ccomapre1<-data.frame(no=colnames(mydata2)[i],
+                              c_sn=ccomr$cindex1,
+                              sn_lower=C_index1$lower,
+                              sn_upper=C_index1$upper,
+                              c_com=ccomr$cindex2,
+                              c_lower=C_index2$lower,
+                              c_upper=C_index2$upper,
+                              P=ccomr$p.value,row=nrow(mydata2))
+        ccomapre2<-rbind(ccomapre2,ccomapre1)
+        i=i+1}
+    write.csv(ccomapre2,paste0(filename,"_cindexcompare.csv"))
+    }
+```
+
+```{r}
+ccom(tr,"train")
+ccom(val,"val")
+ccom(ts,"test")
+ccom(rbind(tr,val),"baveno_only")
+```
+
+tROC&AUC
+
+```{r}
+timeroc<- function(df){
+    timerocdata <- data.frame(time=df$time,status=df$event,
+                              vec1=as.vector(df$prd))
+    ROC<- timeROC(T=timerocdata$time, delta=timerocdata$status,
+                     marker=timerocdata$vec1, cause=1,
+                     weighting='marginal',
+                     times=c(365*3,365*5),ROC=TRUE,iid = TRUE)
+    print(confint(ROC)$CI_AUC)
+    ROC_res<-ROC
+    par(bty="o",pty="s", font =2,
+        font.axis=1,font.lab=2,
+        mfrow=c(1,1),lty=1,col=1,lwd=1)
+    plot(ROC_res,time=365*5,col="#2F4858",title=FALSE,lwd=3)
+    plot(ROC_res,time=365*3,col="#FF0000",add=TRUE,title=FALSE,lwd=3)
+    
+    legend('bottomright',
+       c(paste0('AUC at 3 years: ',round(ROC_res$AUC[1],2)),
+         paste0('AUC at 5 years: ',round(ROC_res$AUC[2],2))),
+       col=c("#FF0000","#2F4858"),lwd=3,bty = 'n')
+}
+```
+
+```{r fig.height=2, fig.width=2}
+timeroc(tr);timeroc(val);timeroc(ts)
+```
+
+```{r}
+aucall <- function(df,filename){
+    auccomapre2<-data.frame(no=1,auc_3y=3,
+                            auc_3y_ci_low=4,
+                            auc_3y_ci_up=5,
+                            
+                            auc_5y=6,
+                            auc_5y_ci_low=7,
+                            auc_5y_ci_up=8,
+                            
+                            row=10)
+    mydata<-df
+    mydata3<-data.frame(time=mydata$time,
+                        status=mydata$event,
+                        pred=as.vector(mydata$prd),
+                        MELD=as.vector(mydata$MELD),
+                        ALBI=as.vector(mydata$ALBI),
+                        FIB=as.vector(mydata$FIB),
+                        ALBIFIB=as.vector(as.numeric(mydata$AF)),
+                        BAVENO=mydata$BAVENO,
+                        LSM=mydata$LSM)
+    i=3
+    while (i<10){
+        print(i)
+        ROC_a<- timeROC(T=mydata3$time, 
+                      delta=mydata3$status,
+                      marker=mydata3[,3], 
+                      cause=1,
+                      weighting='marginal',
+                      times=c(365*3,365*5),
+                      ROC=TRUE,iid = TRUE)
+        ROC_c<- timeROC(T=mydata3$time, 
+                      delta=mydata3$status,
+                      marker=mydata3[,i], 
+                      cause=1,
+                      weighting='marginal',
+                      times=c(365*3,365*5),
+                      ROC=TRUE,iid = TRUE)
+      
+        auccomapre1<-data.frame(no=colnames(mydata3)[i],
+                                auc_3y=ROC_c$AUC[1],
+                                auc_3y_ci_low=confint(ROC_c)$CI_AUC[1],
+                                auc_3y_ci_up=confint(ROC_c)$CI_AUC[3],
+                                
+                                auc_5y=ROC_c$AUC[2],
+                                auc_5y_ci_low=confint(ROC_c)$CI_AUC[2],
+                                auc_5y_ci_up=confint(ROC_c)$CI_AUC[4],
+                                
+                                row=nrow(mydata3))
+        
+        auccomapre2<-rbind(auccomapre2,auccomapre1)
+        #print(auccomapre2)
+        i=i+1}
+    write.csv(auccomapre2,paste0(filename,"_auccompare.csv"))
+    print(auccomapre2)
+    }
+```
+
+```{r}
+aucall(tr,"train")
+aucall(val,"val")
+aucall(ts,"test")
+aucall(rbind(ts,val),"LSM_BAV_ONLY")
+
+```
+
+```{r}
+#res.cut <- surv_cutpoint(tr, #数据集
+#                         time = "time", #生存状态
+#                         event = "event", #生存时间
+#                         variables = c("prd"),
+#                         minprop = 0.1,#需要计算的数据列名
+#                         )
+#summary(res.cut)#
+#
+#cp1 <- cutpointr(tr, prd, event, boot_runs = 1000
+#                )
+#summary(cp1)
+#cp1 <- cutpointr(tr, prd, event,  method = minimize_metric, metric = #p_chisquared
+#                )
+#summary(cp1)##
+```
+
+```{r}
+ddist<-datadist(tr)
+options(datadist= 'ddist')
+fit<-cph(Surv(time,event)~rcs(prd,4),data=tr)
+HR<-Predict(fit,prd,fun=exp,ref.zero=TRUE);
+an <- anova(fit)
+P<-ggplot(HR);P
+```
+
+```{r fig.height=2, fig.width=2, paged.print=FALSE}
+P2<-ggplot()+
+  geom_line(data=HR, #数据来源
+           aes(prd,yhat),#xy轴的数据
+           linetype="solid",#曲线加粗
+           size=1,
+           alpha=0.7,
+           colour="#2F4858")+
+ geom_ribbon(data=HR, #加入置信区间
+             aes(prd,
+             ymin=lower,
+              ymax=upper),
+             alpha=0.2,
+             fill="#2F4858")+
+  theme_few()+
+  #geom_hline(yintercept=1,
+  #         linetype=3,
+  #         size=0.75,
+  #         col="#2F4858")+
+  ###geom_hline(yintercept=14.9,
+   #         linetype=2,
+   #         size=0.75,
+   #         col="#FF0000")+
+  geom_vline(xintercept = -0.14,
+             linetype=3,size=1,col="#546672")+
+    geom_vline(xintercept = 1.4,
+             linetype=3,size=1,col="#FF0000")+
+#y=1的水平线
+  labs(title="",
+       x="Predicted Risk Score",
+       y="Hazard Ratio of decompensation (95%CI)"
+  );
+
+P2
+```
+
+```{r fig.height=2, fig.width=2}
+pptr = tr
+pptr$event = factor(pptr$event)
+ptr<-ggplot(pptr, aes(x = prd, fill = event)) +
+  # 密度曲线函数：alpha设置填充色透明度
+  geom_density(alpha = 0.2)+ 
+  scale_fill_manual(values=c("#546672","#FF0000"))+
+  geom_vline(xintercept = -0.1,
+             linetype=3,size=1,col="#546672")+
+  geom_vline(xintercept = 1.4,
+             linetype=3,size=1,col="#FF0000")+
+  theme_few()+  
+  labs(title="",
+       x="Predicted Risk Score",
+       y="Density"
+  )
+ptr
+```
+
+```{r}
+kmplot<-function(plot,n,filename){
+    df<-data.frame(pre=plot$prd,time=plot$time,event=plot$event)
+    df<- na.omit(df)
+    veclie<- df$pre
+    cutoff1<- -0.14
+    cutoff2<- 1.4
+    if(cutoff1<1){
+      veclie[which(veclie >= cutoff2)] <- 2
+      veclie[which(veclie >=cutoff1 & veclie < cutoff2)] <- 1
+      veclie[which(veclie < cutoff1)] <- 0
+    }
+
+    veclie <-  as.factor(veclie)
+    veclie1 <- veclie
+    df<-cbind(df,veclie1)
+    colnames(df)[4] <-"pre_model"
+    survy <- Surv(time=df$time,event = df$event)
+    survkm <- survy
+    
+    kmdata <- data.frame(surv = survkm,vect1 = veclie1)
+    kmmodel <- survfit(surv~vect1,data=kmdata)
+    par(bty="l",pty="s", font =2,
+        font.axis=2,font.lab=2,mfrow=c(1,1),lty=1,col=1,lwd=2)
+    ggsurv <- ggsurvplot(
+        fit=kmmodel,
+        data=kmdata,  
+        size = 1, 
+        risk.table = T,     
+        pval = TRUE,  
+        conf.int = F, 
+        xlab = "Time (days)", 
+        fun = "event", 
+        xlim=c(0,2190),
+        ylim=c(0,1),
+        #palette = c("#2F4858","#FF0000"),
+        #legend.labs = c("Low risk","High risk"),
+        palette = c("#2F4858","#9BAEBC","#FF0000"),
+        legend.labs = c("Low risk","Moderate rsik","High risk"),
+        break.time.by =365,
+        censor=F,
+        tables.y.text=F,
+        surv.plot.height=0.85,
+        risk.table.height=0.15,
+        ggtheme=theme_few(),
+        tables.theme=theme_void(),risk.table.pos="out",
+        fontsize=3,
+        font.title = c(10, "bold", "black"),
+        font.x = c(10, "plain", "black"), font.y = c(10, "plain", "black"),
+        font.xtickslab = c(10, "plain", "black"),  legend = "top",
+        font.ytickslab = c(10, "plain", "black")
+    )
+    print(ggsurv)
+    write.csv(df,paste0(filename,"_model_pred.csv"),row.names = FALSE)
+    #summary(kmmodel)
+}
+```
+
+```{r fig.height=2, fig.width=2}
+kmplot(tr,365*6,"tr")
+kmplot(val,365*6,"val")
+kmplot(ts,365*6,"ts")
+
+```
+
+```{r}
+
+```
+
+```{r}
+kmplotbaveno<-function(plot,n){
+    df<-data.frame(pre=plot$prd,Bav=plot$BAVENO,time=plot$time,event=plot$event)
+    df<- na.omit(df)
+    veclie<- df$pre
+    cutoff1<- -0.14
+    cutoff2<- 1.4
+    if(cutoff1<1){
+      veclie[which(veclie >= cutoff2)] <- 2
+      veclie[which(veclie >=cutoff1 & veclie < cutoff2)] <- 1
+      veclie[which(veclie < cutoff1)] <- 0
+    }
+
+    veclie <-  as.factor(veclie)
+    veclie1 <- veclie
+    survy <- Surv(time=df$time,event = df$event)
+    survkm <- survy
+    
+    kmdata <- data.frame(surv = survkm,vect1 = veclie1)
+    kmmodel <- survfit(surv~vect1,data=kmdata)
+    par(bty="l",pty="s", font =2,
+        font.axis=2,font.lab=2,mfrow=c(1,1),lty=1,col=1,lwd=2)
+    ggsurv1 <- ggsurvplot(
+        fit=kmmodel,
+        data=kmdata,  
+        size = 1, 
+        risk.table = T,     
+        pval = TRUE,  
+        conf.int = F, 
+        xlab = "Time (days)", 
+        fun = "event", 
+        xlim=c(0,2190),
+        ylim=c(0,1),
+        #palette = c("#2F4858","#FF0000"),
+        #legend.labs = c("Low risk","High risk"),
+        palette = c("#2F4858","#9BAEBC","#FF0000"),
+        legend.labs = c("Low risk","Moderate rsik","High risk"),
+        break.time.by =365,
+        censor=F,
+        tables.y.text=F,
+        surv.plot.height=0.85,
+        risk.table.height=0.15,
+        ggtheme=theme_few(),
+        tables.theme=theme_void(),risk.table.pos="out",
+        fontsize=3,
+        font.title = c(10, "bold", "black"),
+        font.x = c(10, "plain", "black"), font.y = c(10, "plain", "black"),
+        font.xtickslab = c(10, "plain", "black"),  legend = "top",
+        font.ytickslab = c(10, "plain", "black")
+    )
+    print(ggsurv1)
+    kmdata <- data.frame(surv = survkm,vect1 = as.factor(df$Bav))
+    kmmodel <- survfit(surv~vect1,data=kmdata)
+    ggsurv2 <- ggsurvplot(
+        fit=kmmodel,
+        data=kmdata,  
+        size = 1, 
+        risk.table = T,     
+        pval = TRUE,  
+        conf.int = F, 
+        xlab = "Time (days)", 
+        fun = "event", 
+        xlim=c(0,2190),
+        ylim=c(0,1),
+        #palette = c("#2F4858","#FF0000"),
+        #legend.labs = c("Low risk","High risk"),
+        palette = c("#2F4858","#9BAEBC","#FF0000"),
+        legend.labs = c("Low risk","Moderate rsik","High risk"),
+        break.time.by =365,
+        censor=F,
+        tables.y.text=F,
+        surv.plot.height=0.85,
+        risk.table.height=0.15,
+        ggtheme=theme_few(),
+        tables.theme=theme_void(),risk.table.pos="out",
+        fontsize=3,
+        font.title = c(10, "bold", "black"),
+        font.x = c(10, "plain", "black"), font.y = c(10, "plain", "black"),
+        font.xtickslab = c(10, "plain", "black"),  legend = "top",
+        font.ytickslab = c(10, "plain", "black")
+    )
+    print(ggsurv2)
+    #summary(kmmodel)
+}
+```
+
+```{r fig.height=2, fig.width=2}
+kmplotbaveno(tr,365*6)
+```
+
+```{r}
+kmplotbaveno(tr,365*6)
+```
+
+```{r fig.height=2, fig.width=2}
+kmplotbaveno(rbind(ts,val),365*6)
+```
+
+```{r}
+kmplotbaveno(rbind(tr,val),365*6)
+```
+
+```{r}
+#df=rbind(ts,val)
+df=ts
+#df=rbind(tr,val)
+timerocdata <- data.frame(time=df$time,status=df$event,
+                              vec1=as.vector(df$prd))
+i=1
+auccomapre_5y_1<-data.frame(ppv=1,
+                          sen=0)
+while (i<540) {
+  res.SeSpPPVNPV<- SeSpPPVNPV(cutpoint=timerocdata[i,3], 
+                      delta=timerocdata$status,
+                      marker=timerocdata$vec1, 
+                      T=timerocdata$time,
+                      cause=1,
+                      weighting='marginal',
+                      times=c(365*3,365*5),
+                      iid = TRUE)
+  auccomapre_5y_2<-data.frame(ppv=res.SeSpPPVNPV[["PPV"]][2],
+                          sen=res.SeSpPPVNPV[["TP"]][2])
+  auccomapre_5y_1<-rbind(auccomapre_5y_1,auccomapre_5y_2)
+  i=i+1
+}
+
+auc_data=auccomapre_5y_1[1:540, ]
+f <- approxfun(x = auc_data$sen, y = auc_data$ppv)
+prauc=integrate(f, 0, 1)
+
+# 画图
+ggplot(auc_data, aes(x = auc_data$sen,y = auc_data$ppv)) +
+  geom_line() +
+  geom_segment(
+    aes(x = 0, y = 1, xend = 1, yend = 0),
+    linetype = "dashed",
+    color = "grey50",
+    alpha = 0.8
+  ) +
+  xlab("Recall") +
+  ylab("Precision") +
+  ggtitle("Precision-Recall Curve") +
+  guides(linetype = 'none') +
+  annotate('text', 
+           label = paste0('PR-AUC: ', round(unique(prauc[["value"]]),3)),
+           x = 0.40, y = 0.18) +
+  theme_bw()
+```
+
+DCA
+
+```{r}
+dca_one<-function(dca_data){
+  stdca(data=dca_data,
+      outcome='event',
+      ttoutcome='time',
+      predictors=c("prd"),
+      timepoint=365*5,
+      xstop=0.7,
+      probability=c(FALSE),
+      cmprsk=TRUE,smooth=TRUE,loess.span=0.2)
+}
+
+```
+
+```{r fig.height=2, fig.width=2}
+dca_one(tr)
+dca_one(val)
+dca_one(ts)
+```
+
+```{r}
+#dca_data<-rbind(val)
+dca_data<-rbind(ts,val)
+dca_data$AF<-as.numeric(dca_data$AF)
+dca_data<-na.omit(dca_data)
+stdca(data=dca_data,
+      outcome='event',
+      ttoutcome='time',
+      predictors=c("prd","ALBI","FIB","AF","MELD","BAVENO","LSM"),
+      timepoint=365*3,
+      xstop=0.5,
+      probability=c(FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE),
+      cmprsk=TRUE,smooth=TRUE,loess.span=0.2)
+
+#dca_data<-rbind(val)
+dca_data<-rbind(tr)
+dca_data$AF<-as.numeric(dca_data$AF)
+dca_data<-na.omit(dca_data)
+stdca(data=dca_data,
+      outcome='event',
+      ttoutcome='time',
+      predictors=c("prd","ALBI","FIB","AF","MELD","BAVENO","LSM"),
+      timepoint=365*3,
+      xstop=0.5,
+      probability=c(FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE),
+      cmprsk=TRUE,smooth=TRUE,loess.span=0.2)
+
+#dca_data<-rbind(val)
+##dca_data<-rbind(tr)
+#dca_data$AF<-as.numeric(dca_data$AF)
+#dca_data<-na.omit(dca_data)
+#stdca(data=dca_data,
+#      outcome='event',
+#      ttoutcome='time',
+#      predictors=c("prd","ALBI","FIB","AF","MELD"),
+#      timepoint=365*5,
+#      xstop=0.5,
+#      probability=c(FALSE,FALSE,FALSE,FALSE,FALSE),
+#      cmprsk=TRUE,smooth=TRUE,loess.span=0.2)#
+```
+
+#Calibration
+
+```{r}
+calibration <- function(dcadataraw){
+    dcadata <- data.frame(prd=dcadataraw$prd,
+                          time=dcadataraw$time,
+                          event=dcadataraw$event)
+    data_dca <- na.omit(dcadata)
+    evaluaten=floor(nrow(data_dca)/3)
+    
+    par(bty="o",pty="s", font =2,font.axis=2,font.lab=2,mfrow=c(1,1),lty=1,col=1,lwd=1)
+    traincal <- val.surv(f,S=Surv(data_dca$time,
+                                  data_dca$event),
+                         newdata=data_dca, u=365*3, evaluate=evaluaten)
+    res = groupkm(traincal$p, 
+                  Srv=Surv(data_dca$time,data_dca$event), 
+                  m=evaluaten, 
+                  u=365*3, pl=T, add=F,
+                  xlim=c(0,1),
+                  ylim=c(0,1),
+                  errbar=T, 
+                  errbar.col="#FF0000",
+                  cex.axis=1,
+                  cex.lab=1,font=1,
+                  xlab="Predicted Probability of Decompensation",
+                  lwd = 2, 
+                  ylab="Actual Decompensation (proportion)",
+                  cex.subtitle=F,col="#FF0000")
+    abline(0,1,lty=2)
+    lines(res[,c('x','KM')],type= 'o',lwd = 2,col="#FF0000",pch = 16)
+    
+
+    traincal <- val.surv(f,S=Surv(data_dca$time,
+                                  data_dca$event),
+                         newdata=data_dca, u=365*5, 
+                         evaluate=evaluaten)
+    res = groupkm(traincal$p, 
+                  Srv=Surv(data_dca$time,data_dca$event), 
+                  m=evaluaten, u=365*5, pl=T, add=T,
+                  xlim=c(0,1),ylim=c(0,1),errbar=T, 
+                  errbar.col="#2F4858",
+                  cex.axis=1,cex.lab=1,font=1, 
+                  xlab="Predicted Probability of Decompensation",
+                  lwd = 2,
+                  ylab="Actual Decompensation (proportion)",
+                  cex.subtitle=F,
+                  col="#2F4858")
+    abline(0,1,lty=2)
+    lines(res[,c('x','KM')],type= 'o',lwd = 2,col="#2F4858",pch = 16)
+
+    legend('topleft',
+           c(
+             paste0('3-year'),
+             paste0('5-year')),
+           cex=1,
+           col=c(
+                 "#FF0000",
+                 "#2F4858"),lwd=2,bty = 'n')
+}
+```
+
+##Prepare Calibration Model
+
+```{r}
+dcadataraw<-tr
+dcadata <- data.frame(prd=dcadataraw$prd,time=dcadataraw$time,event=dcadataraw$event)
+f =cph(Surv(time=dcadata$time,event=dcadata$event)~prd,x = T, y = T, data  =dcadata,surv = TRUE) 
+```
+
+```{r}
+calibration(tr)
+calibration(val)
+calibration(ts)
+```
+
+KM
+
+```{r}
+kmdata<-rbind(tr,val,ts)
+
+write.csv(kmdata,"KM_ALLDATA.csv")
+fit <- survfit(Surv(time, event) ~ group, data = kmdata)
+print(fit)
+survdiff(Surv(time, event) ~ group, data = kmdata)
+fit2 <- coxph(Surv(time, event) ~ group, data = kmdata)
+summary(fit2)
+# plot
+ggsurvplot(fit = fit, data = kmdata, pval = T,
+           size = 1, risk.table = T,conf.int = F, xlab = "Time (days)",
+           fun = "event",break.time.by =365,censor=F,
+           xlim=c(0,2190),
+           ylim=c(0,1),
+           tables.theme=theme_void(),
+           tables.y.text=F,
+           surv.plot.height=0.85,
+           risk.table.height=0.15,
+           ggtheme=theme_few(),
+           risk.table.pos="out",
+           fontsize=3,
+           font.title = c(10, "bold", "black"),
+           font.x = c(10, "plain", "black"), font.y = c(10, "plain", "black"),
+           font.xtickslab = c(10, "plain", "black"),  legend = "top",
+           font.ytickslab = c(10, "plain", "black"))
+
+```
+
+Table 1
+
+```{r}
+
+library(CBCgrps)
+
+```
+
+```{r}
+head(data_all)
+colnames(data_all)
+```
+
+```{r}
+data_all$ALBIFIB=as.numeric(data_all$ALBIFIB)
+varlist=c("TIME","CP","MELD","ALBI","FIB","APRI","ALBIFIB", "BAVENOVII","CSPH","LSM","age","sex",
+          "Etiology.0.HBVHCV.2.ACHO.3.血吸虫.4.ZMG.6.other","ALB","TBIL","DBIL","IBIL","ALT","AST","SLR","ALP","GGT",
+          "CHE","BUN","Cr","UA","WBC","Hb","PLT",	"INR","ALBIFIB"
+)
+tabVarlist=multigrps(data_all, gvar = "group", varlist = varlist,sim = TRUE)
+print(tabVarlist$Table, quote = T)
+write.csv(tabVarlist,"TABLE1.csv")
+
+```
+
+``` {)}
+```
+
+```{r}
+comparedf<-data.frame(prd=all$prd,group=all$group,
+                      csph=all$CSPH,bv=all$BAVENO,
+                      lsm=all$LSM,event=all$event,
+                      time=all$time)
+veclie<- comparedf$prd
+cutoff1<- -0.14
+cutoff2<- 1.40
+#cutoff1<- 0.02
+#cutoff2<- 0.02
+if(cutoff1<1){
+  veclie[which(veclie >= cutoff2)] <- 2
+  veclie[which(veclie >=cutoff1 & veclie < cutoff2)] <- 1
+  veclie[which(veclie < cutoff1)] <- 0}
+comparedf<-cbind(comparedf,veclie)
+colnames(comparedf)[8] <-"veclie"
+write.csv(comparedf,"ALLDATA1126_FOR_COMPARE.csv")
+```
+
+```{r}
+kmplot2<-function(plot,n){
+    df<-data.frame(veclie=plot$veclie,time=plot$time,event=plot$event)
+    df<- na.omit(df)
+    veclie <-  as.factor(df$veclie)
+    veclie1 <- veclie
+    survy <- Surv(time=df$time,event = df$event)
+    survkm <- survy
+    
+    kmdata <- data.frame(surv = survkm,vect1 = veclie1)
+    kmmodel <- survfit(surv~vect1,data=kmdata)
+    par(bty="l",pty="s", font =2,
+        font.axis=2,font.lab=2,mfrow=c(1,1),lty=1,col=1,lwd=2)
+    ggsurv <- ggsurvplot(
+        fit=kmmodel,
+        data=kmdata,  
+        size = 1, 
+        risk.table = T,     
+        pval = TRUE,  
+        conf.int = F, 
+        xlab = "Time (days)", 
+        fun = "event", 
+        xlim=c(0,2190),
+        ylim=c(0,1),
+        #palette = c("#2F4858","#FF0000"),
+        #legend.labs = c("Low risk","High risk"),
+        palette = c("#2F4858","#9BAEBC","#FF0000"),
+        legend.labs = c("Low risk","Moderate rsik","High risk"),
+        break.time.by =365,
+        censor=F,
+        tables.y.text=F,
+        surv.plot.height=0.85,
+        risk.table.height=0.15,
+        ggtheme=theme_few(),
+        tables.theme=theme_void(),risk.table.pos="out",
+        fontsize=3,
+        font.title = c(10, "bold", "black"),
+        font.x = c(10, "plain", "black"), font.y = c(10, "plain", "black"),
+        font.xtickslab = c(10, "plain", "black"),  legend = "top",
+        font.ytickslab = c(10, "plain", "black")
+    )
+    print(ggsurv)
+    #summary(kmmodel)
+}
+```
+
+```{r}
+tr_ba_mid<- comparedf[which(comparedf$group == "Training"),]
+tr_ba_mid<- tr_ba_mid[which(tr_ba_mid$bv == "1"),]
+```
+
+```{r fig.height=2, fig.width=2}
+kmplot2(tr_ba_mid,365*6)
+```
+
+```{r fig.height=2, fig.width=2}
+ts_ba_mid<- comparedf[which(comparedf$group != "Training"),]
+ts_ba_mid<- ts_ba_mid[which(ts_ba_mid$bv == "1"),]
+kmplot2(ts_ba_mid,365*6)
+```
+
+Sensitivity analysis
+
+```{r}
+cv_cindex_cal<- function(inputdf){
+   surv <- Surv(time=inputdf$Time,event=inputdf$Event)
+   pre <- inputdf$Prediction
+   cdex <- rcorr.cens(pre,surv)
+   #cdex<-survConcordance(surv~pre)$concordance
+   c <- 1-cdex[1]
+   upper <- cdex[3]/2*1.96+c
+   lower <- c-cdex[3]/2*1.96
+   CDEX<-rbind(c,cdex[3])
+   print("_______")
+   print(nrow(inputdf))
+   print(CDEX)}
+```
+
+```{r}
+#C1
+setwd("E:/Y2022-DECOM-SEU/DECOM_FILE/CROSSVALIDATION/C1")
+cvtrain_data <- read.csv(
+  "train.csv")
+cvval_data <-read.csv(
+  "val.csv")
+cvtest_data <- read.csv(
+  "test.csv")
+
+c_tr_cv1 <- cv_cindex_cal(cvtrain_data)  # C-index training
+c_val_cv1 <- cv_cindex_cal(cvval_data) # C-index valdation
+c_ts_cv1 <- cv_cindex_cal(cvtest_data) 
+```
+
+```{r}
+setwd("E:/Y2022-DECOM-SEU/DECOM_FILE/CROSSVALIDATION/C2")
+cvtrain_data <- read.csv(
+  "train.csv")
+cvval_data <-read.csv(
+  "val.csv")
+cvtest_data <- read.csv(
+  "test.csv")
+
+c_tr_cv2 <- cv_cindex_cal(cvtrain_data)  # C-index training
+c_val_cv2 <- cv_cindex_cal(cvval_data) # C-index valdation
+c_ts_cv2 <- cv_cindex_cal(cvtest_data) 
+```
+
+```{r}
+setwd("E:/Y2022-DECOM-SEU/DECOM_FILE/CROSSVALIDATION/C3")
+cvtrain_data <- read.csv(
+  "train.csv")
+cvval_data <-read.csv(
+  "val.csv")
+cvtest_data <- read.csv(
+  "test.csv")
+
+c_tr_cv3 <- cv_cindex_cal(cvtrain_data)  # C-index training
+c_val_cv3 <- cv_cindex_cal(cvval_data) # C-index valdation
+c_ts_cv3 <- cv_cindex_cal(cvtest_data) 
+```
+
+```{r}
+setwd("E:/Y2022-DECOM-SEU/DECOM_FILE/CROSSVALIDATION/C4")
+cvtrain_data <- read.csv(
+  "train.csv")
+cvval_data <-read.csv(
+  "val.csv")
+cvtest_data <- read.csv(
+  "test.csv")
+
+c_tr_cv4 <- cv_cindex_cal(cvtrain_data)  # C-index training
+c_val_cv4 <- cv_cindex_cal(cvval_data) # C-index valdation
+c_ts_cv4 <- cv_cindex_cal(cvtest_data) 
+```
+
+```{r}
+setwd("E:/Y2022-DECOM-SEU/DECOM_FILE/CROSSVALIDATION/C5")
+cvtrain_data <- read.csv(
+  "train.csv")
+cvval_data <-read.csv(
+  "val.csv")
+cvtest_data <- read.csv(
+  "test.csv")
+
+c_tr_cv5 <- cv_cindex_cal(cvtrain_data)  # C-index training
+c_val_cv5 <- cv_cindex_cal(cvval_data) # C-index valdation
+c_ts_cv5 <- cv_cindex_cal(cvtest_data) 
+```
+
+```{r}
+df<-ts
+eventa<-df$event
+#eventa<-df$Status_acute
+timerocdata1 <- data.frame(time=df$time,status=eventa,vec1=as.vector(df$prd))
+ROC1<- timeROC(T=timerocdata1$time, delta=timerocdata1$status,marker=timerocdata1$vec1, cause=1,weighting='marginal',times=c(365*3,365*5),ROC=TRUE)
+
+
+
+#timerocdata2 <- data.frame(time=df$time,status=eventa,vec1=as.vector(df$CP))
+#
+#ROC2<- timeROC(T=timerocdata2$time, delta=timerocdata2$status,marker
+#               =timerocdata2$vec1, cause=1,weighting='marginal',times=c(365#*3,365*5),ROC
+#               =TRUE)
+
+timerocdata3 <- data.frame(time=df$time,status=eventa,vec1=as.vector(df$MELD))
+ROC3<- timeROC(T=timerocdata3$time, delta=timerocdata3$status,marker=timerocdata3$vec1, cause=1,weighting='marginal',times=c(365*3,365*5),ROC=TRUE)
+
+timerocdata4 <- data.frame(time=df$time,status=eventa,vec1=as.vector(df$FIB))
+ROC4<- timeROC(T=timerocdata4$time, delta=timerocdata4$status,marker=timerocdata4$vec1, cause=1,weighting='marginal',times=c(365*3,365*5),ROC=TRUE)
+
+timerocdata5 <- data.frame(time=df$time,status=eventa,vec1=as.vector(df$ALBI))
+ROC5<- timeROC(T=timerocdata5$time, delta=timerocdata5$status,marker=timerocdata5$vec1, cause=1,weighting='marginal',times=c(365*3,365*5),ROC=TRUE)
+
+timerocdata6 <- data.frame(time=df$time,status=eventa,vec1=as.vector(as.numeric(df$AF)))
+ROC6<- timeROC(T=timerocdata6$time, delta=timerocdata6$status,marker=timerocdata6$vec1, cause=1,weighting='marginal',times=c(365*3,365*5),ROC=TRUE)
+
+timerocdata7 <- data.frame(time=df$time,status=eventa,vec1=as.vector(df$BAVENO))
+ROC7<- timeROC(T=timerocdata7$time, delta=timerocdata7$status,marker=timerocdata7$vec1, cause=1,weighting='marginal',times=c(365*3,365*5),ROC=TRUE)
+
+timerocdata8 <- data.frame(time=df$time,status=eventa,vec1=as.vector(df$LSM))
+ROC8<- timeROC(T=timerocdata8$time, delta=timerocdata8$status,marker=timerocdata8$vec1, cause=1,weighting='marginal',times=c(365*3,365*5),ROC=TRUE)
+
+
+
+par(bty="o",pty="s", font =2,font.axis=2,font.lab=2,mfrow=c(1,1),lty=1,col=1,lwd=2)
+plot(ROC1,time=365*3,col="#070F3A",title=FALSE,lwd=3)
+plot(ROC3,time=365*3,col="#182257",add=TRUE,title=FALSE,lwd=2)
+plot(ROC4,time=365*3,col="#313B74",add=TRUE,title=FALSE,lwd=2)
+plot(ROC5,time=365*3,col="#525C91",add=TRUE,title=FALSE,lwd=2)
+plot(ROC6,time=365*3,col="#7C84AE",add=TRUE,title=FALSE,lwd=2)
+plot(ROC7,time=365*3,col="#7C84AE",add=TRUE,lty=2,title=FALSE,lwd=2)
+plot(ROC8,time=365*3,col="#7C84AE",add=TRUE,lty=3,title=FALSE,lwd=2)
+
+#plot(ROC_res,time=365*5,col="#0072B5FF",add=TRUE,title=FALSE,lwd=4)
+
+legend('bottomright',
+   c(paste0('AIDE:',round(ROC1$AUC[1],2)),
+     paste0('MELD:',round(ROC3$AUC[1],2)),
+     paste0('FIB-4:',round(ROC4$AUC[1],2)),
+     paste0('ALBI:',round(ROC5$AUC[1],2)),
+     paste0('ALBI-FIB-4: ',round(ROC6$AUC[1],2)),
+     paste0('BAVENO VII:',round(ROC7$AUC[1],2)),
+     paste0('LSM:',round(ROC8$AUC[1],2))
+    ),col=c("#32383d","#be374a","#6b302f","#88ae88","#fe6e2d","#32383d","#32383d"),lwd=3,bty = 'n', lty=c(1,1,1,1,1,1,1)
+      )
+
+par(bty="o",pty="s", font =2,font.axis=2,font.lab=2,mfrow=c(1,1),lty=1,col=1,lwd=2)
+plot(ROC1,time=365*5,col="#32383d",title=FALSE,lwd=3)
+plot(ROC3,time=365*5,col="#be374a",add=TRUE,title=FALSE,lwd=2)
+plot(ROC4,time=365*5,col="#6b302f",add=TRUE,title=FALSE,lwd=2)
+plot(ROC5,time=365*5,col="#88ae88",add=TRUE,title=FALSE,lwd=2)
+plot(ROC6,time=365*5,col="#fe6e2d",add=TRUE,title=FALSE,lwd=2)
+plot(ROC7,time=365*5,col="#32383d",add=TRUE,lty=2,title=FALSE,lwd=2)
+plot(ROC8,time=365*5,col="#32383d",add=TRUE,lty=3,title=FALSE,lwd=2)
+
+#plot(ROC_res,time=365*5,col="#0072B5FF",add=TRUE,title=FALSE,lwd=4)
+
+legend('bottomright',
+   c(paste0('AIDE:',round(ROC1$AUC[2],2)),
+     paste0('MELD:',round(ROC3$AUC[2],2)),
+     paste0('FIB-4:',round(ROC4$AUC[2],2)),
+     paste0('ALBI:',round(ROC5$AUC[2],2)),
+     paste0('ALBI-FIB-4: ',round(ROC6$AUC[2],2)),
+     paste0('BAVENO VII:',round(ROC7$AUC[2],2)),
+     paste0('LSM:',round(ROC8$AUC[2],2))
+    ),col=c("#32383d","#be374a","#6b302f","#88ae88","#fe6e2d","#32383d","#32383d"),lwd=3,bty = 'n', lty=c(1,1,1,1,1,1,1)
+      )
+
+```
+
+消融实验
+
+```{r}
+#non-segmentation
+nonseg_tr_df <- read.csv("./without_segmentation/train.csv")
+nonseg_ts_df <- read.csv("./without_segmentation/test.csv")
+nonseg_val_df <- read.csv("./without_segmentation/val.csv")
+```
+
+```{r}
+ccom_xr <- function(df1,df2,filename){
+    ccomapre2<-data.frame(c_sn=2,sn_lower=3,
+                          sn_upper=4,c_com=5,c_lower=6,
+                          c_upper=7,P=8)
+    mydata<-df1
+    mydata3<-data.frame(time=mydata$time,
+                        status=mydata$event,
+                        pred=mydata$prd)
+    mydata1<-df2
+    mydata4<-data.frame(time=mydata1$Time,
+                        status=mydata1$Event,
+                        pred=mydata1$Prediction)
+    C_index1 <- concordance.index(x=mydata3$pred, 
+                                      surv.time=mydata3$time,
+                                      surv.event=mydata3$status,
+                                      method="noether")
+    C_index2 <- concordance.index(x=mydata4$pred,
+                                      surv.time=mydata4$time,
+                                      surv.event=mydata4$status,
+                                      method="noether")
+    ccomr<-cindex.comp(C_index1, C_index2)
+    ccomapre1<-data.frame(
+                              c_sn=ccomr$cindex1,
+                              sn_lower=C_index1$lower,
+                              sn_upper=C_index1$upper,
+                              c_com=ccomr$cindex2,
+                              c_lower=C_index2$lower,
+                              c_upper=C_index2$upper,
+                              P=ccomr$p.value)
+    write.csv(ccomapre1,paste0(filename,"_cindexcompare.csv"))
+    }
+```
+
+```{r}
+ccom_xr(tr,nonseg_tr_df,"nonseg_tr")
+ccom_xr(val,nonseg_val_df,"nonseg_val")
+ccom_xr(ts,nonseg_ts_df,"nonseg_ts")
+```
+
+```{r}
+#non-segmentation
+noncli_tr_df <- read.csv("./without_clinical/train.csv")
+noncli_ts_df <- read.csv("./without_clinical/test.csv")
+noncli_val_df <- read.csv("./without_clinical/val.csv")
+```
+
+```{r}
+ccom_xr(tr[8:539,],noncli_tr_df,"noncli_tr")
+ccom_xr(val,noncli_val_df,"noncli_val")
+ccom_xr(ts,noncli_ts_df,"noncli_ts")
+```
+
+```{r}
+
+```
